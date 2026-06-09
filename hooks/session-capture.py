@@ -10,12 +10,17 @@ compaction and session boundaries:
 2. On SessionEnd only, appends a DRAFT lesson stub to
    agents/lifeos/learnings/lessons.md for later human/agent review —
    but only when the transcript is >50KB (skips trivial sessions).
+3. On SessionEnd with a >50KB transcript, also best-effort POSTs a
+   completed-session record to the dashboard sessions API (key read
+   from the Mac keychain, 2s timeout).
 
 Fast (<2s), non-blocking, fail-silent: never raises, always exits 0.
 """
 import json
 import os
+import subprocess
 import sys
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -24,6 +29,7 @@ CURRENT_MD = VAULT / 'agents' / 'lifeos' / 'state' / 'current.md'
 LESSONS_MD = VAULT / 'agents' / 'lifeos' / 'learnings' / 'lessons.md'
 CHECKPOINT_HEADER = '## Session checkpoints'
 TRANSCRIPT_MIN_BYTES = 50_000
+DASHBOARD_URL = os.environ.get('DASHBOARD_URL', 'https://dashboard-sage-psi-61.vercel.app')
 
 
 def append_checkpoint(event, session_id, cwd):
@@ -59,6 +65,50 @@ def append_draft_lesson(session_id, cwd, transcript_path):
         f.write(stub)
 
 
+def post_dashboard_session(session_id, cwd, transcript_path):
+    """Best-effort: record the ended session on the dashboard.
+
+    Uses the upsert POST /api/session/<id> route (creates the record if
+    missing) so a single request stores an already-completed session.
+    Never raises; returns the HTTP status (for testing) or None on skip/failure.
+    """
+    try:
+        size = os.path.getsize(transcript_path)
+        if size <= TRANSCRIPT_MIN_BYTES:
+            return None
+        api_key = subprocess.run(
+            ['security', 'find-generic-password', '-s', 'dashboard-api', '-w'],
+            capture_output=True, text=True, timeout=2,
+        ).stdout.strip()
+        if not api_key:
+            return None
+        project = os.path.basename(str(cwd).rstrip('/')) or 'unknown'
+        id_prefix = str(session_id)[:8]
+        ended_at = datetime.now().astimezone().isoformat()
+        transcript_kb = round(size / 1024)
+        record_id = f'cc-{id_prefix}-{int(datetime.now().timestamp())}'
+        body = json.dumps({
+            'task': f'Claude Code: {project} (session {id_prefix}, {transcript_kb}KB)',
+            'repo': project,
+            'project': project,
+            'sessionId': id_prefix,
+            'status': 'completed',
+            'startedAt': ended_at,
+            'endedAt': ended_at,
+            'transcriptKB': transcript_kb,
+        }).encode()
+        req = urllib.request.Request(
+            f'{DASHBOARD_URL}/api/session/{record_id}',
+            data=body,
+            headers={'Content-Type': 'application/json', 'x-api-key': api_key},
+            method='POST',
+        )
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            return resp.status
+    except Exception:
+        return None
+
+
 def main():
     try:
         data = json.load(sys.stdin)
@@ -72,6 +122,7 @@ def main():
         append_checkpoint(event, session_id, cwd)
         if event == 'SessionEnd' and transcript_path:
             append_draft_lesson(session_id, cwd, transcript_path)
+            post_dashboard_session(session_id, cwd, transcript_path)
     except Exception:
         pass
 
