@@ -25,6 +25,7 @@
 | `on-stop.py`           | Stop hook - final update + cleanup     |
 | `update-claude-md.py`  | Core logic - generates CLAUDE.md       |
 | `lib/session_state.py` | Session tracking (projects, counters)  |
+| `advisor-gate.py`      | PreToolUse + Stop - forces advisor() before a turn's first edit, before finishing a turn with edits, and when stuck (3 failures in a turn, or "still broken"-style prompts). Kill switch `ADVISOR_GATE=off`; tests in `test_advisor_gate.py` |
 
 ## CLAUDE.md Structure
 
