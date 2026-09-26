@@ -32,6 +32,19 @@ TRANSCRIPT_MIN_BYTES = 50_000
 DASHBOARD_URL = os.environ.get('DASHBOARD_URL', 'https://dashboard-sage-psi-61.vercel.app')
 
 
+def is_work_session(cwd):
+    """Only sessions run inside a git repo count as work worth a checkpoint or
+    draft lesson. Home-dir chats (Codex runs there by default) produced ~75%
+    of the drafts in Sept 2026, e.g. an unrelated news conversation."""
+    try:
+        path = Path(cwd).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    if path == Path.home().resolve():
+        return False
+    return any((p / '.git').exists() for p in (path, *path.parents))
+
+
 def append_checkpoint(event, session_id, cwd):
     if not CURRENT_MD.exists():
         return
@@ -119,9 +132,12 @@ def main():
         cwd = data.get('cwd', os.getcwd())
         transcript_path = data.get('transcript_path', '')
 
-        append_checkpoint(event, session_id, cwd)
+        work = is_work_session(cwd)
+        if work:
+            append_checkpoint(event, session_id, cwd)
         if event == 'SessionEnd' and transcript_path:
-            append_draft_lesson(session_id, cwd, transcript_path)
+            if work:
+                append_draft_lesson(session_id, cwd, transcript_path)
             post_dashboard_session(session_id, cwd, transcript_path)
     except Exception:
         pass
